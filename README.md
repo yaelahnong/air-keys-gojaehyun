@@ -1,6 +1,6 @@
 # 🎹 Air Keys Studio
 
-> 📺 **Referensi utama:** konsep "air keys" / dua roda nada ala **SoundGo** ([@gojaehyun](https://www.instagram.com/p/DXhjQksueS2/) · soundgo.vercel.app)
+> 📺 **Referensi utama:** konsep "air keys" / dua roda nada ala **SoundGo** ([@gojaehyun](https://www.instagram.com/gojaehyun.go/) · soundgo.vercel.app)
 
 Mainkan chord di udara — lewat **dua roda (wheel)** yang melayang di atas video webcam.
 **Tangan kiri** memilih **nada dasar (root)** di roda kiri, **tangan kanan** memilih
