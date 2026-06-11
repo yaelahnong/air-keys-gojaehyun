@@ -176,8 +176,8 @@
   </div>
   <div class="spacer"></div>
   <div class="tool">Pinch
-    <input type="range" id="pinchSlider" min="3" max="12" step="0.5" value="6">
-    <b id="pinchVal">6.0</b>
+    <input type="range" id="pinchSlider" min="0.25" max="0.7" step="0.05" value="0.45">
+    <b id="pinchVal">0.45</b>
   </div>
 </div>
 
@@ -248,7 +248,6 @@ const QUALITY_INTERVALS = {
 };
 
 const BASE_MIDI = 60;          // C4 — oktaf dasar chord
-const PINCH_RETRIGGER_MS = 90; // debounce kecil agar ganti segmen tidak spam attack
 
 /* ============================================================
    2. REFERENSI DOM
@@ -279,7 +278,7 @@ const statAudio = document.getElementById("statAudio");
    3. STATE APLIKASI
    ============================================================ */
 const state = {
-  pinchThresh: 0.06,        // jarak normalisasi jempol-telunjuk untuk "pinch"
+  pinchThresh: 0.45,        // ambang derajat pinch 0..1 (lihat pinchAmount)
   // Roda kiri (root)
   rootIndex: null,          // segmen yang sedang ditunjuk tangan kiri (null = tak menunjuk)
   rootPinching: false,      // tangan kiri sedang pinch?
@@ -292,81 +291,61 @@ const state = {
   selectedQual: "maj",      // jenis chord terpilih (persist)
   // Audio
   audioReady: false,
-  lastTriggerKey: "",       // signature chord aktif terakhir (untuk retrigger)
-  lastTriggerAt: 0,
+  soundOn: false,           // ada bunyi keluar saat ini? (gain > ~0)
 };
 
 /* ============================================================
-   4. AUDIO ENGINE (Tone.js) — synth gelombang sine, nada ditahan
+   4. AUDIO ENGINE (Tone.js) — oscillator sine yang BERBUNYI TERUS
    ------------------------------------------------------------
-   PolySynth(Sine) dengan envelope lembut. Chord ditahan (sustain)
-   selama tangan kiri pinch; tiap nada di-attack/release individual
-   agar perpindahan root terdengar mulus (voice-leading sederhana).
+   Mengikuti pola sound.gojaehyun.com: 4 oscillator tetap yang tidak
+   pernah di-stop. Saat root/quality berganti, frekuensi tiap voice
+   DI-GLIDE (frequency.rampTo) & gain di-fade (gain.rampTo) — bukan
+   di-trigger ulang — sehingga perpindahan tidak memotong suara.
    ============================================================ */
-let synth = null;
-let activeNotes = new Set();  // nada (note string) yang sedang berbunyi
+const VOICES = 4;             // jumlah oscillator chord tetap
+let chordOscs = [];           // oscillator yang berjalan terus
+let chordGain = null;         // gain master chord (di-fade 0 ↔ aktif)
+let currentChordGain = 0;     // nilai gain ter-smoothing antar-frame
+let lastVoiceMidis = [];      // frekuensi voice terakhir (untuk status)
+
+// Interpolasi linear sederhana (smoothing antar-frame).
+function lerp(a, b, t) { return a + (b - a) * t; }
 
 function initAudio() {
-  // Rantai master: synth → lowpass lembut → reverb tipis → volume → output.
-  const filter = new Tone.Filter(4200, "lowpass");
-  const reverb = new Tone.Reverb({ decay: 1.6, wet: 0.18 });
-  const vol    = new Tone.Volume(-4);
-  filter.chain(reverb, vol, Tone.Destination);
+  // Rantai master: oscillator → gain → lowpass lembut → volume → output.
+  const filter = new Tone.Filter(2600, "lowpass");
+  const vol    = new Tone.Volume(-2);
+  filter.chain(vol, Tone.Destination);
+  chordGain = new Tone.Gain(0).connect(filter);
 
-  synth = new Tone.PolySynth(Tone.Synth, {
-    oscillator: { type: waveSel.value },           // default "sine" (sesuai permintaan)
-    envelope:   { attack: 0.03, decay: 0.18, sustain: 0.7, release: 0.6 },
-    volume: -10,
-  }).connect(filter);
-  synth.maxPolyphony = 24;
+  // 4 oscillator sine, start sekali & dibiarkan berbunyi selamanya.
+  for (let i = 0; i < VOICES; i++) {
+    const o = new Tone.Oscillator(220, waveSel.value).connect(chordGain);
+    o.start();
+    chordOscs.push(o);
+  }
 
   state.audioReady = true;
-  statAudio.textContent = "ON · sine";
+  statAudio.textContent = `ON · ${waveSel.value}`;
   statAudio.classList.add("on");
 }
 
 /**
- * Bangun daftar nada chord (note string) dari root + quality + range.
- * Range = jumlah oktaf: 1 = chord dasar; 2 = + root satu oktaf di atas;
- * 3 = + root satu oktaf di atas & bass satu oktaf di bawah.
+ * Tentukan MIDI tiap voice (selalu VOICES nada) dari root + quality.
+ * Interval di-pad sampai 4 voice (menambah oktaf), lalu Range melebarkan
+ * voice teratas untuk suara yang lebih lebar.
  */
-function buildChordNotes(rootName, qualName) {
-  if (!rootName || rootName === "OFF") return [];
-  const baseMidi  = BASE_MIDI + NOTE_SEMITONE[rootName];
-  const intervals = QUALITY_INTERVALS[qualName] || QUALITY_INTERVALS["maj"];
+function chordVoiceMidis(rootName, qualName) {
+  const baseMidi = BASE_MIDI + NOTE_SEMITONE[rootName];
+  const base = QUALITY_INTERVALS[qualName] || QUALITY_INTERVALS["maj"];
+  const iv = base.slice();
+  while (iv.length < VOICES) iv.push(iv[iv.length % base.length] + 12);
+
+  const midis = iv.slice(0, VOICES).map((x) => baseMidi + x);
   const range = parseInt(rangeSel.value, 10);
-
-  const midis = intervals.map((iv) => baseMidi + iv); // chord dasar
-  if (range >= 2) midis.push(baseMidi + 12);          // root satu oktaf di atas
-  if (range >= 3) midis.unshift(baseMidi - 12);       // bass satu oktaf di bawah
-
-  // MIDI → note string (mis. 60 → "C4"), dedup
-  return [...new Set(midis)].map((m) => Tone.Frequency(m, "midi").toNote());
-}
-
-/**
- * Sinkronkan suara yang berbunyi dengan daftar nada yang diinginkan.
- * Hanya attack nada baru & release nada yang sudah tak dipakai → sustain
- * mulus tanpa klik saat root/quality berganti.
- */
-function setActiveChord(desiredNotes) {
-  if (!state.audioReady || !synth) return;
-  const desired = new Set(desiredNotes);
-
-  // Release nada yang tak lagi diinginkan
-  for (const n of activeNotes) {
-    if (!desired.has(n)) { synth.triggerRelease(n); activeNotes.delete(n); }
-  }
-  // Attack nada baru
-  for (const n of desired) {
-    if (!activeNotes.has(n)) { synth.triggerAttack(n); activeNotes.add(n); }
-  }
-}
-
-function releaseAll() {
-  if (!synth) return;
-  for (const n of activeNotes) synth.triggerRelease(n);
-  activeNotes.clear();
+  if (range >= 2) midis[VOICES - 1] += 12;  // voice teratas naik 1 oktaf
+  if (range >= 3) midis[VOICES - 2] += 12;  // voice kedua dari atas naik 1 oktaf
+  return midis;
 }
 
 /* ============================================================
@@ -380,6 +359,19 @@ function wheelRadii() {
 }
 
 function dist2D(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+/**
+ * Derajat "pinch" 0..1, dinormalisasi terhadap ukuran telapak (jarak
+ * landmark 0↔9) agar konsisten di berbagai jarak ke kamera — sama seperti
+ * sound.gojaehyun.com. ratio kecil = jari rapat. CLOSED/OPEN = batas kalibrasi.
+ */
+function pinchAmount(lm) {
+  const palm = dist2D(lm[0], lm[9]);
+  if (palm < 1e-4) return 0;
+  const ratio = dist2D(lm[4], lm[8]) / palm;
+  const CLOSED = 0.30, OPEN = 0.80;
+  return Math.max(0, Math.min(1, (OPEN - ratio) / (OPEN - CLOSED)));
+}
 
 /**
  * Petakan titik (canvas px) ke segmen sebuah roda.
@@ -420,7 +412,7 @@ function pointToSegment(wheel, px, py) {
 function processHand(lm, which) {
   const W = canvasEl.width, H = canvasEl.height;
   const thumb = lm[4], index = lm[8];
-  const pinching = dist2D(thumb, index) < state.pinchThresh;
+  const pinching = pinchAmount(lm) > state.pinchThresh;
   const px = ((thumb.x + index.x) / 2) * W;
   const py = ((thumb.y + index.y) / 2) * H;
 
@@ -448,36 +440,38 @@ function processHand(lm, which) {
 }
 
 /**
- * Tentukan & mainkan chord saat ini berdasar state.
- * Bunyi hanya selama tangan kiri pinch & root ≠ OFF.
- * Mode "Single Note" → hanya root tunggal (abaikan quality).
+ * Update suara tiap frame TANPA memotong: frekuensi tiap voice di-glide
+ * (rampTo) ke chord baru & gain di-fade. Dipanggil terus-menerus, baik
+ * saat berbunyi maupun saat fade-out, sehingga peralihan root/quality —
+ * termasuk maj7 → tengah (maj) — terdengar mulus.
  */
 function updateSound() {
   if (!state.audioReady) return;
 
   const playing = state.rootPinching && state.selectedRoot && state.selectedRoot !== "OFF";
-  let notes = [];
+  let targetGain = 0;
 
   if (playing) {
+    let midis;
     if (modeSel.value === "note") {
+      // Mode nada tunggal: semua voice unison di root (terdengar satu nada, lebih tebal)
       const m = BASE_MIDI + NOTE_SEMITONE[state.selectedRoot];
-      notes = [Tone.Frequency(m, "midi").toNote()];
+      midis = new Array(VOICES).fill(m);
     } else {
-      notes = buildChordNotes(state.selectedRoot, state.selectedQual);
+      midis = chordVoiceMidis(state.selectedRoot, state.selectedQual);
     }
+    // Glide tiap voice ke frekuensi targetnya (portamento 0.12s) — kunci suara mulus
+    chordOscs.forEach((o, i) => {
+      o.frequency.rampTo(Tone.Frequency(midis[i], "midi").toFrequency(), 0.12);
+    });
+    lastVoiceMidis = midis;
+    targetGain = 0.22;
   }
 
-  const key = notes.join(",");
-  const now = performance.now();
-  // Debounce kecil: jangan ganti voicing lebih cepat dari PINCH_RETRIGGER_MS
-  if (key !== state.lastTriggerKey && now - state.lastTriggerAt >= PINCH_RETRIGGER_MS) {
-    setActiveChord(notes);
-    state.lastTriggerKey = key;
-    state.lastTriggerAt = now;
-  } else if (key === "" && activeNotes.size) {
-    releaseAll();
-    state.lastTriggerKey = "";
-  }
+  // Fade gain master (smoothing antar-frame lalu rampTo agar tanpa klik)
+  currentChordGain = lerp(currentChordGain, targetGain, playing ? 0.3 : 0.18);
+  chordGain.gain.rampTo(currentChordGain, 0.06);
+  state.soundOn = currentChordGain > 0.004;
 }
 
 /* ============================================================
@@ -645,7 +639,7 @@ function updateStatusBar(rootSeen, qualSeen) {
   statChord.classList.toggle("on", playing);
 
   statAudio.textContent = !state.audioReady ? "OFF"
-    : activeNotes.size ? `ON · ${activeNotes.size} nada`
+    : state.soundOn ? `ON · ${waveSel.value}`
     : "ON · diam";
 }
 
@@ -653,12 +647,12 @@ function updateStatusBar(rootSeen, qualSeen) {
    10. UI WIRING
    ============================================================ */
 pinchSlider.addEventListener("input", () => {
-  state.pinchThresh = pinchSlider.value / 100;
-  pinchVal.textContent = Number(pinchSlider.value).toFixed(1);
+  state.pinchThresh = parseFloat(pinchSlider.value);
+  pinchVal.textContent = state.pinchThresh.toFixed(2);
 });
 waveSel.addEventListener("change", () => {
-  if (synth) synth.set({ oscillator: { type: waveSel.value } });
-  if (state.audioReady) statAudio.textContent = `ON · ${waveSel.value}`;
+  // Ganti bentuk gelombang semua oscillator secara live (tetap berbunyi)
+  chordOscs.forEach((o) => { o.type = waveSel.value; });
 });
 scaleSel.addEventListener("change", () => {
   // Scale memengaruhi quality default di tengah roda kanan

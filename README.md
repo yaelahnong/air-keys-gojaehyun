@@ -18,7 +18,7 @@ tanpa dependensi yang perlu di-_install_. Cukup buka di browser.
 - 🎡 **Roda kiri — pemilih nada:** 7 segmen `C D E F G A B` (searah jarum jam dari atas), tengah = `OFF` (diam).
 - 🎡 **Roda kanan — pemilih jenis chord:** 8 segmen `maj · maj7 · 7 · sus4 · m · m7 · dim · aug`.
 - 👌 **Pilih lewat pinch** — dekatkan jempol & telunjuk di area roda; segmen yang ditunjuk menyala oranye dengan pointer dot (gaya `Major G`).
-- 🔊 **Suara gelombang sine** ([Tone.js](https://tonejs.github.io/)) — chord ditahan (_sustain_) selama tangan kiri pinch, dengan _voice-leading_ mulus saat root berganti.
+- 🔊 **Suara gelombang sine** ([Tone.js](https://tonejs.github.io/)) — 4 `Tone.Oscillator` yang berbunyi terus-menerus; saat root/quality berganti, frekuensi tiap voice **di-glide** (`frequency.rampTo`) & gain di-fade, **bukan** di-trigger ulang → perpindahan tidak memotong suara (sama seperti sound.gojaehyun.com).
 - 🎛️ **Toolbar** ala referensi: Mode (Two-hand Chord / Single Note), Snap, Simple (ABCDEFG), Scale (Major/Minor), Wave (Sine/Triangle/Square/Sawtooth), Range (1–3 oktaf).
 - 🎚️ **Slider sensitivitas pinch.**
 - 📊 **Status bar:** root terpilih, quality, chord aktif, dan level audio output.
