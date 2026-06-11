@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Air Keys Studio</title>
+
+<!-- ============================================================
+     STYLES — dark theme, dua roda (wheel) di atas video kamera
+     (mengikuti referensi SoundGo / air-keys gojaehyun)
+     ============================================================ -->
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #15181d;
+    --panel-2: #1d2127;
+    --border: #2a2f37;
+    --text: #f5f7fa;
+    --muted: #8a93a0;
+    --accent: #ff8a3c;   /* oranye — warna highlight pilihan (sesuai referensi) */
+    --root: #ffb547;     /* roda kiri  — pemilih nada (root)  */
+    --qual: #6fd3ff;     /* roda kanan — pemilih jenis chord  */
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 18px 16px 28px;
+  }
+  header { width: 100%; max-width: 1000px; margin-bottom: 12px; }
+  header h1 { font-size: 30px; font-weight: 800; letter-spacing: -0.5px; }
+  header p  { color: var(--muted); font-size: 13px; margin-top: 4px; line-height: 1.5; }
+
+  /* ---- Area video + canvas overlay ---- */
+  .stage {
+    position: relative;
+    width: 100%; max-width: 1000px;
+    aspect-ratio: 16 / 9;
+    background: #000;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  #video { display: none; } /* frame digambar ulang ke canvas (mirror selfie) */
+  #canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* Overlay tombol mulai (wajib: gesture user untuk kamera + audio) */
+  #startOverlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+    background: rgba(8, 10, 13, 0.92);
+    z-index: 10; text-align: center; padding: 20px;
+  }
+  #startBtn {
+    background: var(--accent);
+    color: #2a1500;
+    font-size: 18px; font-weight: 800;
+    border: none; border-radius: 12px;
+    padding: 16px 32px;
+    cursor: pointer;
+  }
+  #startBtn:hover { filter: brightness(1.1); }
+  #startOverlay small { color: var(--muted); max-width: 460px; line-height: 1.5; }
+  #startOverlay .err { color: #ff7a64; font-weight: 600; }
+
+  /* ---- Toolbar bawah (meniru bar referensi) ---- */
+  .toolbar {
+    width: 100%; max-width: 1000px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 14px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-top: 12px;
+    font-size: 13px;
+  }
+  .tool { display: flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
+  .tool label { color: var(--muted); font-weight: 600; }
+  .tool select {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 8px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .tool input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; }
+  .tool input[type="range"] { width: 90px; accent-color: var(--accent); }
+  .tool b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .spacer { flex: 1; }
+
+  /* ---- Status bar bawah ---- */
+  .statusbar {
+    width: 100%; max-width: 1000px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-top: 12px;
+  }
+  .status-cell {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 14px;
+  }
+  .status-cell .label {
+    font-size: 10px; font-weight: 700; letter-spacing: 1px;
+    text-transform: uppercase; color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .status-cell .value { font-size: 18px; font-weight: 800; }
+  .status-cell .value.on { color: var(--accent); }
+  @media (max-width: 680px) {
+    .statusbar { grid-template-columns: repeat(2, 1fr); }
+    header h1 { font-size: 23px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Air Keys Studio</h1>
+  <p>Tangan kiri pinch (jempol + telunjuk) di roda kiri untuk memilih <b>nada (root)</b> &nbsp;·&nbsp;
+     tangan kanan pinch di roda kanan untuk memilih <b>jenis chord</b>.<br>
+     Chord berbunyi (gelombang <b>sine</b>) selama tangan kiri menahan pinch — arahkan ke <b>OFF</b> di tengah untuk berhenti.</p>
+</header>
+
+<!-- ============ VIDEO + CANVAS OVERLAY ============ -->
+<div class="stage">
+  <video id="video" playsinline></video>
+  <canvas id="canvas"></canvas>
+  <div id="startOverlay">
+    <button id="startBtn">▶ Mulai</button>
+    <small>Klik untuk mengaktifkan webcam &amp; audio.<br>
+    Dua roda muncul di layar — dekatkan jempol &amp; telunjuk (pinch) di area roda untuk memilih.</small>
+    <small class="err" id="startErr"></small>
+  </div>
+</div>
+
+<!-- ============ TOOLBAR (meniru referensi) ============ -->
+<div class="toolbar">
+  <div class="tool">
+    <label>Mode</label>
+    <select id="modeSel">
+      <option value="chord" selected>Two-hand Chord</option>
+      <option value="note">Single Note</option>
+    </select>
+  </div>
+  <div class="tool"><label><input type="checkbox" id="snapChk" checked> Snap</label></div>
+  <div class="tool"><label><input type="checkbox" id="simpleChk" checked> Simple (ABCDEFG)</label></div>
+  <div class="tool">
+    <label>Scale</label>
+    <select id="scaleSel">
+      <option value="maj" selected>Major</option>
+      <option value="min">Minor</option>
+    </select>
+  </div>
+  <div class="tool">
+    <label>Wave</label>
+    <select id="waveSel">
+      <option value="sine" selected>Sine</option>
+      <option value="triangle">Triangle</option>
+      <option value="square">Square</option>
+      <option value="sawtooth">Sawtooth</option>
+    </select>
+  </div>
+  <div class="tool">
+    <label>Range</label>
+    <select id="rangeSel">
+      <option value="1">1 oct</option>
+      <option value="2">2 oct</option>
+      <option value="3" selected>3 oct</option>
+    </select>
+  </div>
+  <div class="spacer"></div>
+  <div class="tool">Pinch
+    <input type="range" id="pinchSlider" min="3" max="12" step="0.5" value="6">
+    <b id="pinchVal">6.0</b>
+  </div>
+</div>
+
+<!-- ============ STATUS BAR ============ -->
+<div class="statusbar">
+  <div class="status-cell">
+    <div class="label">Root (Kiri)</div>
+    <div class="value" id="statRoot">—</div>
+  </div>
+  <div class="status-cell">
+    <div class="label">Quality (Kanan)</div>
+    <div class="value" id="statQual">maj</div>
+  </div>
+  <div class="status-cell">
+    <div class="label">Chord</div>
+    <div class="value" id="statChord">—</div>
+  </div>
+  <div class="status-cell">
+    <div class="label">Audio Output</div>
+    <div class="value" id="statAudio">OFF</div>
+  </div>
+</div>
+
+<!-- ============================================================
+     LIBRARY VIA CDN (versi dipin agar stabil)
+     ============================================================ -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+
+<script>
+"use strict";
+
+/* ============================================================
+   1. KONFIGURASI RODA & MUSIK
+   ============================================================ */
+
+// Roda kiri — pemilih nada/root. 7 segmen (tuts putih) searah jarum jam
+// mulai dari atas. Tengah = "OFF" (diam).
+const ROOT_WHEEL = {
+  cx: 0.25, cy: 0.52,            // pusat roda (koordinat ternormalisasi 0..1)
+  segments: ["C", "D", "E", "F", "G", "A", "B"],
+  center: "OFF",
+  color: "#ffb547",
+};
+
+// Roda kanan — pemilih jenis chord. 8 segmen searah jarum jam dari atas.
+const QUAL_WHEEL = {
+  cx: 0.75, cy: 0.52,
+  segments: ["maj", "maj7", "7", "sus4", "m", "m7", "dim", "aug"],
+  center: "maj",
+  color: "#6fd3ff",
+};
+
+// Offset semitone tiap nada dari C (untuk hitung MIDI). C4 = MIDI 60.
+const NOTE_SEMITONE = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+
+// Interval (semitone dari root) untuk tiap jenis chord.
+const QUALITY_INTERVALS = {
+  "maj":  [0, 4, 7],
+  "maj7": [0, 4, 7, 11],
+  "7":    [0, 4, 7, 10],
+  "sus4": [0, 5, 7],
+  "m":    [0, 3, 7],
+  "m7":   [0, 3, 7, 10],
+  "dim":  [0, 3, 6],
+  "aug":  [0, 4, 8],
+};
+
+const BASE_MIDI = 60;          // C4 — oktaf dasar chord
+const PINCH_RETRIGGER_MS = 90; // debounce kecil agar ganti segmen tidak spam attack
+
+/* ============================================================
+   2. REFERENSI DOM
+   ============================================================ */
+const videoEl  = document.getElementById("video");
+const canvasEl = document.getElementById("canvas");
+const ctx      = canvasEl.getContext("2d");
+
+const startOverlay = document.getElementById("startOverlay");
+const startBtn     = document.getElementById("startBtn");
+const startErr     = document.getElementById("startErr");
+
+const modeSel    = document.getElementById("modeSel");
+const snapChk    = document.getElementById("snapChk");
+const simpleChk  = document.getElementById("simpleChk");
+const scaleSel   = document.getElementById("scaleSel");
+const waveSel    = document.getElementById("waveSel");
+const rangeSel   = document.getElementById("rangeSel");
+const pinchSlider= document.getElementById("pinchSlider");
+const pinchVal   = document.getElementById("pinchVal");
+
+const statRoot  = document.getElementById("statRoot");
+const statQual  = document.getElementById("statQual");
+const statChord = document.getElementById("statChord");
+const statAudio = document.getElementById("statAudio");
+
+/* ============================================================
+   3. STATE APLIKASI
+   ============================================================ */
+const state = {
+  pinchThresh: 0.06,        // jarak normalisasi jempol-telunjuk untuk "pinch"
+  // Roda kiri (root)
+  rootIndex: null,          // segmen yang sedang ditunjuk tangan kiri (null = tak menunjuk)
+  rootPinching: false,      // tangan kiri sedang pinch?
+  rootPinchPt: null,        // posisi pinch tangan kiri (canvas px) untuk pointer dot
+  selectedRoot: null,       // nada root terpilih (persist), null/"OFF" = diam
+  // Roda kanan (quality)
+  qualIndex: null,
+  qualPinching: false,
+  qualPinchPt: null,
+  selectedQual: "maj",      // jenis chord terpilih (persist)
+  // Audio
+  audioReady: false,
+  lastTriggerKey: "",       // signature chord aktif terakhir (untuk retrigger)
+  lastTriggerAt: 0,
+};
+
+/* ============================================================
+   4. AUDIO ENGINE (Tone.js) — synth gelombang sine, nada ditahan
+   ------------------------------------------------------------
+   PolySynth(Sine) dengan envelope lembut. Chord ditahan (sustain)
+   selama tangan kiri pinch; tiap nada di-attack/release individual
+   agar perpindahan root terdengar mulus (voice-leading sederhana).
+   ============================================================ */
+let synth = null;
+let activeNotes = new Set();  // nada (note string) yang sedang berbunyi
+
+function initAudio() {
+  // Rantai master: synth → lowpass lembut → reverb tipis → volume → output.
+  const filter = new Tone.Filter(4200, "lowpass");
+  const reverb = new Tone.Reverb({ decay: 1.6, wet: 0.18 });
+  const vol    = new Tone.Volume(-4);
+  filter.chain(reverb, vol, Tone.Destination);
+
+  synth = new Tone.PolySynth(Tone.Synth, {
+    oscillator: { type: waveSel.value },           // default "sine" (sesuai permintaan)
+    envelope:   { attack: 0.03, decay: 0.18, sustain: 0.7, release: 0.6 },
+    volume: -10,
+  }).connect(filter);
+  synth.maxPolyphony = 24;
+
+  state.audioReady = true;
+  statAudio.textContent = "ON · sine";
+  statAudio.classList.add("on");
+}
+
+/**
+ * Bangun daftar nada chord (note string) dari root + quality + range.
+ * Range = jumlah oktaf: 1 = chord dasar; 2 = + root satu oktaf di atas;
+ * 3 = + root satu oktaf di atas & bass satu oktaf di bawah.
+ */
+function buildChordNotes(rootName, qualName) {
+  if (!rootName || rootName === "OFF") return [];
+  const baseMidi  = BASE_MIDI + NOTE_SEMITONE[rootName];
+  const intervals = QUALITY_INTERVALS[qualName] || QUALITY_INTERVALS["maj"];
+  const range = parseInt(rangeSel.value, 10);
+
+  const midis = intervals.map((iv) => baseMidi + iv); // chord dasar
+  if (range >= 2) midis.push(baseMidi + 12);          // root satu oktaf di atas
+  if (range >= 3) midis.unshift(baseMidi - 12);       // bass satu oktaf di bawah
+
+  // MIDI → note string (mis. 60 → "C4"), dedup
+  return [...new Set(midis)].map((m) => Tone.Frequency(m, "midi").toNote());
+}
+
+/**
+ * Sinkronkan suara yang berbunyi dengan daftar nada yang diinginkan.
+ * Hanya attack nada baru & release nada yang sudah tak dipakai → sustain
+ * mulus tanpa klik saat root/quality berganti.
+ */
+function setActiveChord(desiredNotes) {
+  if (!state.audioReady || !synth) return;
+  const desired = new Set(desiredNotes);
+
+  // Release nada yang tak lagi diinginkan
+  for (const n of activeNotes) {
+    if (!desired.has(n)) { synth.triggerRelease(n); activeNotes.delete(n); }
+  }
+  // Attack nada baru
+  for (const n of desired) {
+    if (!activeNotes.has(n)) { synth.triggerAttack(n); activeNotes.add(n); }
+  }
+}
+
+function releaseAll() {
+  if (!synth) return;
+  for (const n of activeNotes) synth.triggerRelease(n);
+  activeNotes.clear();
+}
+
+/* ============================================================
+   5. GEOMETRI RODA — pemetaan posisi pinch → segmen
+   ============================================================ */
+
+// Ukuran roda dalam piksel canvas (radius luar & dalam), dihitung dari tinggi.
+function wheelRadii() {
+  const H = canvasEl.height;
+  return { outer: H * 0.40, inner: H * 0.15 };
+}
+
+function dist2D(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+/**
+ * Petakan titik (canvas px) ke segmen sebuah roda.
+ * Mengembalikan { index, angle, snapPt } atau:
+ *   index = -1  → di area tengah (OFF / center)
+ *   null        → di luar jangkauan roda
+ * Segmen 0 berpusat di atas (-90°), bertambah searah jarum jam.
+ */
+function pointToSegment(wheel, px, py) {
+  const W = canvasEl.width, H = canvasEl.height;
+  const cx = wheel.cx * W, cy = wheel.cy * H;
+  const { outer, inner } = wheelRadii();
+  const dx = px - cx, dy = py - cy;
+  const r = Math.hypot(dx, dy);
+
+  if (r > outer * 1.25) return null;       // terlalu jauh — tidak menunjuk roda
+  if (r < inner) return { index: -1, angle: 0, snapPt: { x: cx, y: cy } };
+
+  const N = wheel.segments.length;
+  const seg = (2 * Math.PI) / N;
+  const ang = Math.atan2(dy, dx);          // 0 = kanan, +PI/2 = bawah
+  const rel = ang + Math.PI / 2;           // geser agar 0 = atas
+  let index = Math.round(rel / seg);
+  index = ((index % N) + N) % N;
+
+  // Titik snap = di tengah segmen (radius tengah), untuk pointer dot bila Snap aktif
+  const mid = (inner + outer) / 2;
+  const ca = -Math.PI / 2 + index * seg;
+  const snapPt = { x: cx + mid * Math.cos(ca), y: cy + mid * Math.sin(ca) };
+  return { index, angle: ang, snapPt };
+}
+
+/* ============================================================
+   6. PEMROSESAN TIAP TANGAN
+   ============================================================ */
+
+// Tangan kiri user → roda kiri (root). Tangan kanan user → roda kanan (quality).
+function processHand(lm, which) {
+  const W = canvasEl.width, H = canvasEl.height;
+  const thumb = lm[4], index = lm[8];
+  const pinching = dist2D(thumb, index) < state.pinchThresh;
+  const px = ((thumb.x + index.x) / 2) * W;
+  const py = ((thumb.y + index.y) / 2) * H;
+
+  const wheel = which === "root" ? ROOT_WHEEL : QUAL_WHEEL;
+  const hit = pointToSegment(wheel, px, py);
+
+  if (which === "root") {
+    state.rootPinching = pinching;
+    state.rootPinchPt  = { x: px, y: py };
+    state.rootIndex    = hit ? hit.index : null;
+    if (pinching && hit) {
+      state.selectedRoot = hit.index === -1 ? "OFF" : wheel.segments[hit.index];
+    }
+    if (snapChk.checked && hit && hit.index >= 0) state.rootPinchPt = hit.snapPt;
+  } else {
+    state.qualPinching = pinching;
+    state.qualPinchPt  = { x: px, y: py };
+    state.qualIndex    = hit ? hit.index : null;
+    if (pinching && hit) {
+      // Tengah roda = pilihan cepat chord polos ("maj", atau "m" saat Scale Minor)
+      state.selectedQual = hit.index === -1 ? wheel.center : wheel.segments[hit.index];
+    }
+    if (snapChk.checked && hit && hit.index >= 0) state.qualPinchPt = hit.snapPt;
+  }
+}
+
+/**
+ * Tentukan & mainkan chord saat ini berdasar state.
+ * Bunyi hanya selama tangan kiri pinch & root ≠ OFF.
+ * Mode "Single Note" → hanya root tunggal (abaikan quality).
+ */
+function updateSound() {
+  if (!state.audioReady) return;
+
+  const playing = state.rootPinching && state.selectedRoot && state.selectedRoot !== "OFF";
+  let notes = [];
+
+  if (playing) {
+    if (modeSel.value === "note") {
+      const m = BASE_MIDI + NOTE_SEMITONE[state.selectedRoot];
+      notes = [Tone.Frequency(m, "midi").toNote()];
+    } else {
+      notes = buildChordNotes(state.selectedRoot, state.selectedQual);
+    }
+  }
+
+  const key = notes.join(",");
+  const now = performance.now();
+  // Debounce kecil: jangan ganti voicing lebih cepat dari PINCH_RETRIGGER_MS
+  if (key !== state.lastTriggerKey && now - state.lastTriggerAt >= PINCH_RETRIGGER_MS) {
+    setActiveChord(notes);
+    state.lastTriggerKey = key;
+    state.lastTriggerAt = now;
+  } else if (key === "" && activeNotes.size) {
+    releaseAll();
+    state.lastTriggerKey = "";
+  }
+}
+
+/* ============================================================
+   7. HAND TRACKING (MediaPipe Hands)
+   ============================================================ */
+const hands = new Hands({
+  locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}`,
+});
+hands.setOptions({
+  maxNumHands: 2,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.6,
+  minTrackingConfidence: 0.5,
+});
+hands.onResults(onResults);
+
+function onResults(results) {
+  const W = canvasEl.width, H = canvasEl.height;
+
+  // Gambar frame video secara mirror (tampilan cermin/selfie)
+  ctx.save();
+  ctx.translate(W, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(results.image, 0, 0, W, H);
+  ctx.restore();
+
+  let rootSeen = false, qualSeen = false;
+
+  if (results.multiHandLandmarks && results.multiHandedness) {
+    for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+      // Mirror landmark agar konsisten dengan canvas selfie
+      const lm = results.multiHandLandmarks[i].map((p) => ({ x: 1 - p.x, y: p.y, z: p.z }));
+
+      // Label handedness MediaPipe mengasumsikan input sudah mirror; feed
+      // getUserMedia TIDAK mirror, jadi dibalik: "Right" = tangan KIRI user.
+      const isLeftHand = results.multiHandedness[i].label === "Right";
+
+      if (isLeftHand) { rootSeen = true; processHand(lm, "root"); }
+      else            { qualSeen = true; processHand(lm, "qual"); }
+    }
+  }
+
+  // Reset bila tangan hilang dari frame
+  if (!rootSeen) { state.rootPinching = false; state.rootIndex = null; state.rootPinchPt = null; }
+  if (!qualSeen) { state.qualPinching = false; state.qualIndex = null; state.qualPinchPt = null; }
+
+  updateSound();
+
+  // Render overlay roda
+  drawWheel(ROOT_WHEEL, state.rootIndex, state.rootPinching, state.rootPinchPt,
+            state.selectedRoot, true);
+  drawWheel(QUAL_WHEEL, state.qualIndex, state.qualPinching, state.qualPinchPt,
+            state.selectedQual, false);
+
+  updateStatusBar(rootSeen, qualSeen);
+}
+
+/* ============================================================
+   8. RENDERING RODA (Canvas)
+   ============================================================ */
+function drawWheel(wheel, hoverIndex, pinching, pinchPt, selectedLabel, isRoot) {
+  const W = canvasEl.width, H = canvasEl.height;
+  const cx = wheel.cx * W, cy = wheel.cy * H;
+  const { outer, inner } = wheelRadii();
+  const N = wheel.segments.length;
+  const seg = (2 * Math.PI) / N;
+
+  ctx.lineJoin = "round";
+
+  for (let i = 0; i < N; i++) {
+    const ca = -Math.PI / 2 + i * seg;     // sudut pusat segmen (0 = atas)
+    const a0 = ca - seg / 2, a1 = ca + seg / 2;
+
+    // Highlight: segmen yang sedang ditunjuk (oranye saat pinch, redup saat hover)
+    const isHover = hoverIndex === i;
+    const isSelected = isRoot ? false : (wheel.segments[i] === selectedLabel);
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, outer, a0, a1);
+    ctx.arc(cx, cy, inner, a1, a0, true);
+    ctx.closePath();
+
+    if (isHover && pinching)      ctx.fillStyle = "rgba(255,138,60,0.72)";
+    else if (isHover)             ctx.fillStyle = "rgba(255,138,60,0.30)";
+    else if (isSelected)          ctx.fillStyle = "rgba(111,211,255,0.28)";
+    else                          ctx.fillStyle = "rgba(20,26,34,0.55)";
+    ctx.fill();
+
+    ctx.strokeStyle = "rgba(255,255,255,0.28)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Label segmen
+    const mid = (inner + outer) / 2;
+    const lx = cx + mid * Math.cos(ca), ly = cy + mid * Math.sin(ca);
+    ctx.fillStyle = (isHover && pinching) ? "#1a0d00" : "rgba(255,255,255,0.92)";
+    ctx.font = `bold ${Math.round(outer * 0.13)}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(wheel.segments[i], lx, ly);
+  }
+
+  // Lingkaran tengah
+  ctx.beginPath();
+  ctx.arc(cx, cy, inner, 0, 2 * Math.PI);
+  ctx.fillStyle = "rgba(8,10,13,0.82)";
+  ctx.fill();
+  ctx.strokeStyle = wheel.color;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Teks tengah tetap: roda kiri = "OFF" (diam); roda kanan = "maj" (chord polos).
+  // Menunjuk + pinch ke tengah memilih label ini.
+  const centerHot = state.audioReady && hoverIndex === -1 && pinching;
+  ctx.fillStyle = centerHot ? "#ff8a3c" : wheel.color;
+  ctx.font = `bold ${Math.round(inner * 0.42)}px sans-serif`;
+  ctx.fillText(wheel.center, cx, cy);
+
+  // Pointer dot di posisi pinch + label pilihan (gaya referensi "Major G").
+  // Hanya digambar saat tangan benar-benar berada di area roda (hoverIndex != null).
+  if (pinchPt && hoverIndex !== null) {
+    ctx.beginPath();
+    ctx.arc(pinchPt.x, pinchPt.y, pinching ? 12 : 8, 0, 2 * Math.PI);
+    ctx.fillStyle = pinching ? "#fff" : "rgba(255,255,255,0.6)";
+    ctx.fill();
+    ctx.strokeStyle = "#ff8a3c";
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    if (pinching && hoverIndex !== null) {
+      const segLabel = hoverIndex === -1 ? wheel.center : wheel.segments[hoverIndex];
+      const txt = (isRoot && hoverIndex >= 0)
+        ? `${scaleSel.value === "maj" ? "Major" : "Minor"} ${segLabel}`
+        : segLabel;
+      ctx.font = "bold 18px sans-serif";
+      ctx.textAlign = "left";
+      const tw = ctx.measureText(txt).width + 14;
+      ctx.fillStyle = "rgba(255,138,60,0.92)";
+      ctx.fillRect(pinchPt.x + 14, pinchPt.y - 13, tw, 26);
+      ctx.fillStyle = "#1a0d00";
+      ctx.fillText(txt, pinchPt.x + 21, pinchPt.y + 1);
+    }
+  }
+}
+
+/* ============================================================
+   9. STATUS BAR
+   ============================================================ */
+function updateStatusBar(rootSeen, qualSeen) {
+  const playing = state.rootPinching && state.selectedRoot && state.selectedRoot !== "OFF";
+
+  statRoot.textContent = state.selectedRoot || (rootSeen ? "—" : "—");
+  statRoot.classList.toggle("on", playing);
+
+  statQual.textContent = state.selectedQual;
+  statQual.classList.toggle("on", state.qualPinching);
+
+  if (playing) {
+    statChord.textContent = modeSel.value === "note"
+      ? state.selectedRoot
+      : `${state.selectedRoot}${state.selectedQual === "maj" ? "" : state.selectedQual}`;
+  } else {
+    statChord.textContent = "—";
+  }
+  statChord.classList.toggle("on", playing);
+
+  statAudio.textContent = !state.audioReady ? "OFF"
+    : activeNotes.size ? `ON · ${activeNotes.size} nada`
+    : "ON · diam";
+}
+
+/* ============================================================
+   10. UI WIRING
+   ============================================================ */
+pinchSlider.addEventListener("input", () => {
+  state.pinchThresh = pinchSlider.value / 100;
+  pinchVal.textContent = Number(pinchSlider.value).toFixed(1);
+});
+waveSel.addEventListener("change", () => {
+  if (synth) synth.set({ oscillator: { type: waveSel.value } });
+  if (state.audioReady) statAudio.textContent = `ON · ${waveSel.value}`;
+});
+scaleSel.addEventListener("change", () => {
+  // Scale memengaruhi quality default di tengah roda kanan
+  state.selectedQual = scaleSel.value === "min" ? "m" : "maj";
+  QUAL_WHEEL.center = state.selectedQual;
+});
+// Ganti mode/range tidak butuh aksi khusus — dibaca langsung saat updateSound().
+
+/* ============================================================
+   11. STARTUP — izin webcam + audio (perlu gesture user)
+   ============================================================ */
+startBtn.addEventListener("click", async () => {
+  startBtn.disabled = true;
+  startBtn.textContent = "Memuat…";
+  startErr.textContent = "";
+  try {
+    await Tone.start();
+    initAudio();
+
+    const camera = new Camera(videoEl, {
+      onFrame: async () => { await hands.send({ image: videoEl }); },
+      width: 1280,
+      height: 720,
+    });
+    await camera.start();
+
+    canvasEl.width  = videoEl.videoWidth  || 1280;
+    canvasEl.height = videoEl.videoHeight || 720;
+
+    startOverlay.style.display = "none";
+  } catch (err) {
+    console.error(err);
+    startBtn.disabled = false;
+    startBtn.textContent = "▶ Mulai";
+    startErr.textContent =
+      "Gagal mengakses kamera. Pastikan izin webcam diberikan. " +
+      "Jika dibuka via file://, jalankan: python3 -m http.server";
+  }
+});
+</script>
+</body>
+</html>
