@@ -305,11 +305,13 @@ const state = {
 const VOICES = 4;             // jumlah oscillator chord tetap
 let chordOscs = [];           // oscillator yang berjalan terus
 let chordGain = null;         // gain master chord (di-fade 0 ↔ aktif)
-let currentChordGain = 0;     // nilai gain ter-smoothing antar-frame
-let lastVoiceMidis = [];      // frekuensi voice terakhir (untuk status)
+let lastVoiceMidis = [];      // MIDI voice yang terakhir DIJADWALKAN
+let lastTargetGain = null;    // gain yang terakhir DIJADWALKAN
 
-// Interpolasi linear sederhana (smoothing antar-frame).
-function lerp(a, b, t) { return a + (b - a) * t; }
+const CHORD_GAIN = 0.22;      // gain saat berbunyi
+const GLIDE   = 0.12;         // portamento antar-chord (detik)
+const ATTACK  = 0.08;         // fade-in saat mulai pinch
+const RELEASE = 0.25;         // fade-out saat lepas pinch
 
 function initAudio() {
   // Rantai master: oscillator → gain → lowpass lembut → volume → output.
@@ -324,6 +326,9 @@ function initAudio() {
     o.start();
     chordOscs.push(o);
   }
+
+  lastTargetGain = 0;   // chordGain memang mulai dari 0
+  lastVoiceMidis = [];
 
   state.audioReady = true;
   statAudio.textContent = `ON · ${waveSel.value}`;
@@ -441,15 +446,19 @@ function processHand(lm, which) {
 
 /**
  * Update suara tiap frame TANPA memotong: frekuensi tiap voice di-glide
- * (rampTo) ke chord baru & gain di-fade. Dipanggil terus-menerus, baik
- * saat berbunyi maupun saat fade-out, sehingga peralihan root/quality —
+ * (rampTo) ke chord baru & gain di-fade, sehingga peralihan root/quality —
  * termasuk maj7 → tengah (maj) — terdengar mulus.
+ *
+ * PENTING: rampTo hanya dipanggil bila nilai targetnya BERUBAH. Tiap rampTo
+ * menjadwalkan event otomasi baru di timeline Web Audio; kalau dipanggil tiap
+ * frame (±60×/detik × 5 param) event menumpuk sampai ratusan ribu dan audio
+ * thread akhirnya nge-hang setelah beberapa menit.
  */
 function updateSound() {
   if (!state.audioReady) return;
 
   const playing = state.rootPinching && state.selectedRoot && state.selectedRoot !== "OFF";
-  let targetGain = 0;
+  const targetGain = playing ? CHORD_GAIN : 0;
 
   if (playing) {
     let midis;
@@ -460,18 +469,20 @@ function updateSound() {
     } else {
       midis = chordVoiceMidis(state.selectedRoot, state.selectedQual);
     }
-    // Glide tiap voice ke frekuensi targetnya (portamento 0.12s) — kunci suara mulus
-    chordOscs.forEach((o, i) => {
-      o.frequency.rampTo(Tone.Frequency(midis[i], "midi").toFrequency(), 0.12);
-    });
+    // Glide hanya voice yang nadanya benar-benar pindah
+    for (let i = 0; i < VOICES; i++) {
+      if (lastVoiceMidis[i] === midis[i]) continue;
+      chordOscs[i].frequency.rampTo(Tone.Frequency(midis[i], "midi").toFrequency(), GLIDE);
+    }
     lastVoiceMidis = midis;
-    targetGain = 0.22;
   }
 
-  // Fade gain master (smoothing antar-frame lalu rampTo agar tanpa klik)
-  currentChordGain = lerp(currentChordGain, targetGain, playing ? 0.3 : 0.18);
-  chordGain.gain.rampTo(currentChordGain, 0.06);
-  state.soundOn = currentChordGain > 0.004;
+  // Fade gain master sekali per perubahan (attack saat pinch, release saat lepas)
+  if (targetGain !== lastTargetGain) {
+    chordGain.gain.rampTo(targetGain, playing ? ATTACK : RELEASE);
+    lastTargetGain = targetGain;
+  }
+  state.soundOn = playing;
 }
 
 /* ============================================================
