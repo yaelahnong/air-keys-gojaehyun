@@ -175,6 +175,14 @@
     </select>
   </div>
   <div class="spacer"></div>
+  <div class="tool">Transpose
+    <input type="range" id="transSlider" min="-12" max="12" step="1" value="0">
+    <b id="transVal">0</b>
+  </div>
+  <div class="tool">Volume
+    <input type="range" id="volSlider" min="-40" max="6" step="1" value="-2">
+    <b id="volVal">-2 dB</b>
+  </div>
   <div class="tool">Pinch
     <input type="range" id="pinchSlider" min="0.25" max="0.7" step="0.05" value="0.45">
     <b id="pinchVal">0.45</b>
@@ -215,11 +223,16 @@
    1. KONFIGURASI RODA & MUSIK
    ============================================================ */
 
-// Roda kiri — pemilih nada/root. 7 segmen (tuts putih) searah jarum jam
-// mulai dari atas. Tengah = "OFF" (diam).
+// Isi roda kiri, searah jarum jam mulai dari atas. Checkbox "Simple" menukar
+// keduanya: dicentang = 7 tuts putih, dilepas = 12 nada kromatik.
+const SIMPLE_NOTES    = ["C", "D", "E", "F", "G", "A", "B"];
+const CHROMATIC_NOTES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+// Roda kiri — pemilih nada/root. Tengah = "OFF" (diam).
+// segments diisi applySimpleMode() saat startup & tiap checkbox Simple berubah.
 const ROOT_WHEEL = {
   cx: 0.25, cy: 0.52,            // pusat roda (koordinat ternormalisasi 0..1)
-  segments: ["C", "D", "E", "F", "G", "A", "B"],
+  segments: SIMPLE_NOTES.slice(),
   center: "OFF",
   color: "#ffb547",
 };
@@ -233,7 +246,10 @@ const QUAL_WHEEL = {
 };
 
 // Offset semitone tiap nada dari C (untuk hitung MIDI). C4 = MIDI 60.
-const NOTE_SEMITONE = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+const NOTE_SEMITONE = {
+  C: 0, "C#": 1, D: 2, "D#": 3, E: 4, F: 5,
+  "F#": 6, G: 7, "G#": 8, A: 9, "A#": 10, B: 11,
+};
 
 // Interval (semitone dari root) untuk tiap jenis chord.
 const QUALITY_INTERVALS = {
@@ -268,6 +284,10 @@ const waveSel    = document.getElementById("waveSel");
 const rangeSel   = document.getElementById("rangeSel");
 const pinchSlider= document.getElementById("pinchSlider");
 const pinchVal   = document.getElementById("pinchVal");
+const volSlider  = document.getElementById("volSlider");
+const volVal     = document.getElementById("volVal");
+const transSlider= document.getElementById("transSlider");
+const transVal   = document.getElementById("transVal");
 
 const statRoot  = document.getElementById("statRoot");
 const statQual  = document.getElementById("statQual");
@@ -292,6 +312,8 @@ const state = {
   // Audio
   audioReady: false,
   soundOn: false,           // ada bunyi keluar saat ini? (gain > ~0)
+  masterDb: -2,             // volume master (dB); MUTE_DB = senyap
+  transpose: 0,             // geser semua nada (semiton); label roda TIDAK ikut berubah
 };
 
 /* ============================================================
@@ -305,6 +327,7 @@ const state = {
 const VOICES = 4;             // jumlah oscillator chord tetap
 let chordOscs = [];           // oscillator yang berjalan terus
 let chordGain = null;         // gain master chord (di-fade 0 ↔ aktif)
+let masterVol = null;         // volume master, dikontrol slider Volume
 let lastVoiceMidis = [];      // MIDI voice yang terakhir DIJADWALKAN
 let lastTargetGain = null;    // gain yang terakhir DIJADWALKAN
 
@@ -312,12 +335,15 @@ const CHORD_GAIN = 0.22;      // gain saat berbunyi
 const GLIDE   = 0.12;         // portamento antar-chord (detik)
 const ATTACK  = 0.08;         // fade-in saat mulai pinch
 const RELEASE = 0.25;         // fade-out saat lepas pinch
+const MUTE_DB = -40;          // nilai minimum slider = senyap total
+const VOL_RAMP = 0.05;        // ramp volume agar tidak "klik"
 
 function initAudio() {
   // Rantai master: oscillator → gain → lowpass lembut → volume → output.
   const filter = new Tone.Filter(2600, "lowpass");
-  const vol    = new Tone.Volume(-2);
-  filter.chain(vol, Tone.Destination);
+  masterVol    = new Tone.Volume(state.masterDb);
+  masterVol.mute = state.masterDb <= MUTE_DB;
+  filter.chain(masterVol, Tone.Destination);
   chordGain = new Tone.Gain(0).connect(filter);
 
   // 4 oscillator sine, start sekali & dibiarkan berbunyi selamanya.
@@ -336,12 +362,35 @@ function initAudio() {
 }
 
 /**
+ * Mode nada tunggal: roda kanan (quality) tidak dipakai sama sekali — tidak
+ * digambar, tangan kanan diabaikan, dan chord quality tidak ikut berbunyi.
+ * state.selectedQual tetap disimpan agar pilihan lama kembali saat ke mode Chord.
+ */
+function isSingleNote() { return modeSel.value === "note"; }
+
+/** MIDI root setelah transpose. Satu-satunya tempat transpose masuk ke audio. */
+function rootMidi(rootName) {
+  return BASE_MIDI + NOTE_SEMITONE[rootName] + state.transpose;
+}
+
+/**
+ * Nama nada yang BENAR-BENAR berbunyi setelah transpose — untuk status bar saja.
+ * Roda tetap memakai label aslinya (rootName), sesuai desain: transpose
+ * menggeser nada, bukan tampilan roda.
+ */
+function soundingName(rootName) {
+  if (!rootName || rootName === "OFF") return rootName;
+  // +120 menjaga hasil % tetap positif untuk transpose negatif (min -12).
+  return CHROMATIC_NOTES[(NOTE_SEMITONE[rootName] + state.transpose + 120) % 12];
+}
+
+/**
  * Tentukan MIDI tiap voice (selalu VOICES nada) dari root + quality.
  * Interval di-pad sampai 4 voice (menambah oktaf), lalu Range melebarkan
  * voice teratas untuk suara yang lebih lebar.
  */
 function chordVoiceMidis(rootName, qualName) {
-  const baseMidi = BASE_MIDI + NOTE_SEMITONE[rootName];
+  const baseMidi = rootMidi(rootName);
   const base = QUALITY_INTERVALS[qualName] || QUALITY_INTERVALS["maj"];
   const iv = base.slice();
   while (iv.length < VOICES) iv.push(iv[iv.length % base.length] + 12);
@@ -462,9 +511,9 @@ function updateSound() {
 
   if (playing) {
     let midis;
-    if (modeSel.value === "note") {
+    if (isSingleNote()) {
       // Mode nada tunggal: semua voice unison di root (terdengar satu nada, lebih tebal)
-      const m = BASE_MIDI + NOTE_SEMITONE[state.selectedRoot];
+      const m = rootMidi(state.selectedRoot);
       midis = new Array(VOICES).fill(m);
     } else {
       midis = chordVoiceMidis(state.selectedRoot, state.selectedQual);
@@ -520,8 +569,10 @@ function onResults(results) {
       // getUserMedia TIDAK mirror, jadi dibalik: "Right" = tangan KIRI user.
       const isLeftHand = results.multiHandedness[i].label === "Right";
 
-      if (isLeftHand) { rootSeen = true; processHand(lm, "root"); }
-      else            { qualSeen = true; processHand(lm, "qual"); }
+      // Saat Single Note, tangan kanan diabaikan: qualSeen tetap false sehingga
+      // blok reset di bawah membersihkan pointer/hover roda kanan yang tersisa.
+      if (isLeftHand)             { rootSeen = true; processHand(lm, "root"); }
+      else if (!isSingleNote())   { qualSeen = true; processHand(lm, "qual"); }
     }
   }
 
@@ -532,10 +583,14 @@ function onResults(results) {
   updateSound();
 
   // Render overlay roda
+  // Roda kiri tetap di posisinya (cx 0.25) agar tangan tak perlu menyesuaikan
+  // saat mode berganti; roda kanan hilang sepenuhnya di mode Single Note.
   drawWheel(ROOT_WHEEL, state.rootIndex, state.rootPinching, state.rootPinchPt,
             state.selectedRoot, true);
-  drawWheel(QUAL_WHEEL, state.qualIndex, state.qualPinching, state.qualPinchPt,
-            state.selectedQual, false);
+  if (!isSingleNote()) {
+    drawWheel(QUAL_WHEEL, state.qualIndex, state.qualPinching, state.qualPinchPt,
+              state.selectedQual, false);
+  }
 
   updateStatusBar(rootSeen, qualSeen);
 }
@@ -634,16 +689,21 @@ function drawWheel(wheel, hoverIndex, pinching, pinchPt, selectedLabel, isRoot) 
 function updateStatusBar(rootSeen, qualSeen) {
   const playing = state.rootPinching && state.selectedRoot && state.selectedRoot !== "OFF";
 
-  statRoot.textContent = state.selectedRoot || (rootSeen ? "—" : "—");
+  // Status bar menampilkan nada yang benar-benar berbunyi (ikut transpose),
+  // sementara roda tetap menampilkan label aslinya.
+  const sounding = soundingName(state.selectedRoot);
+
+  statRoot.textContent = sounding || (rootSeen ? "—" : "—");
   statRoot.classList.toggle("on", playing);
 
-  statQual.textContent = state.selectedQual;
-  statQual.classList.toggle("on", state.qualPinching);
+  // Quality tak berpengaruh di Single Note — tandai kosong agar tak menyesatkan.
+  statQual.textContent = isSingleNote() ? "—" : state.selectedQual;
+  statQual.classList.toggle("on", !isSingleNote() && state.qualPinching);
 
   if (playing) {
-    statChord.textContent = modeSel.value === "note"
-      ? state.selectedRoot
-      : `${state.selectedRoot}${state.selectedQual === "maj" ? "" : state.selectedQual}`;
+    statChord.textContent = isSingleNote()
+      ? sounding
+      : `${sounding}${state.selectedQual === "maj" ? "" : state.selectedQual}`;
   } else {
     statChord.textContent = "—";
   }
@@ -661,10 +721,39 @@ pinchSlider.addEventListener("input", () => {
   state.pinchThresh = parseFloat(pinchSlider.value);
   pinchVal.textContent = state.pinchThresh.toFixed(2);
 });
+transSlider.addEventListener("input", () => {
+  state.transpose = parseInt(transSlider.value, 10);
+  // Tampilkan tanda + agar arah geser terbaca (0 tetap polos).
+  transVal.textContent = state.transpose > 0 ? `+${state.transpose}` : `${state.transpose}`;
+  // Tak perlu sentuh oscillator: updateSound() menghitung ulang MIDI tiap frame
+  // dan meng-glide voice yang berubah.
+});
+volSlider.addEventListener("input", () => {
+  state.masterDb = parseFloat(volSlider.value);
+  const muted = state.masterDb <= MUTE_DB;
+  volVal.textContent = muted ? "Mute" : `${state.masterDb} dB`;
+  // Slider boleh digeser sebelum Mulai; nilainya dipakai saat initAudio().
+  if (!masterVol) return;
+  masterVol.mute = muted;
+  if (!muted) masterVol.volume.rampTo(state.masterDb, VOL_RAMP);
+});
 waveSel.addEventListener("change", () => {
   // Ganti bentuk gelombang semua oscillator secara live (tetap berbunyi)
   chordOscs.forEach((o) => { o.type = waveSel.value; });
 });
+function applySimpleMode() {
+  ROOT_WHEEL.segments = (simpleChk.checked ? SIMPLE_NOTES : CHROMATIC_NOTES).slice();
+  // Kembali ke Simple saat root kres sedang dipilih (mis. C#): nada itu hilang
+  // dari roda, jadi hentikan bunyi ketimbang menahan root yang tak terlihat.
+  // selectedRoot null = belum pernah memilih; biarkan agar status bar tetap "—".
+  if (state.selectedRoot && !ROOT_WHEEL.segments.includes(state.selectedRoot)) {
+    state.selectedRoot = "OFF";
+  }
+  state.rootIndex = null;   // indeks lama menunjuk ke jumlah segmen yang berbeda
+}
+simpleChk.addEventListener("change", applySimpleMode);
+applySimpleMode();          // samakan roda dengan posisi awal checkbox
+
 scaleSel.addEventListener("change", () => {
   // Scale memengaruhi quality default di tengah roda kanan
   state.selectedQual = scaleSel.value === "min" ? "m" : "maj";
